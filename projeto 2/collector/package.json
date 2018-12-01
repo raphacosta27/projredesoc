@@ -1,0 +1,17 @@
+{
+  "name": "projeto-redesoc",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "@raphacosta27 & @fredericocurti",
+  "license": "ISC",
+  "dependencies": {
+    "@std/esm": "^0.26.0",
+    "googleapis": "^34.0.0",
+    "keypress": "^0.2.1",
+    "node-fetch": "^2.2.1"
+  }
+}
