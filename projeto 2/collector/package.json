@@ -12,6 +12,7 @@
     "@std/esm": "^0.26.0",
     "googleapis": "^34.0.0",
     "keypress": "^0.2.1",
+    "lodash": "^4.17.11",
     "node-fetch": "^2.2.1"
   }
 }

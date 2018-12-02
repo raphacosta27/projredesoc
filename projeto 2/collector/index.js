@@ -6,15 +6,17 @@ const keypress = require('keypress')
 const print = console.log
 const KEY = 'AIzaSyAJAwDCuxdoaUOmPObTU_SNYu3OfhKSAvc'
 const youtube = google.youtube('v3')
-const SUB_LIMIT = 5000000
+const SUB_LIMIT = 1000000
 keypress(process.stdin);
 const categories = require('./categories')
+const { omit, flatten } = require('lodash')
 let running = true
 
 
 const file = fs.openSync('./output.gml', 'a')
 /** @typedef {{source: string, target: string}} Edge - creates a new type named 'SpecialType' */
 /** @type {{directed: 1 | 0, nodes: {}, edges: Edge[]}} */
+
 const graph = {
     directed: 1,
     nodes: {},
@@ -43,83 +45,105 @@ const fetchChannel = async (id) => {
 }
 
 const traverse = async (currentId) => {
+    let children
+    let data
+
     try {
-        let data = await fetchChannel(currentId)
+        let nodeIsVisited = graph.nodes[currentId] && graph.nodes[currentId].visited ? true : false
+        if (nodeIsVisited) {
+            throw `Channel ${currentId} was already visited`
+        } else {
+            // try {
+            let data = await fetchChannel(currentId)
+            // } catch {
+                // return [currentId]
+            // }
 
-        if (data === null || data.brandingSettings === null || data.brandingSettings === undefined || !data) {
-            console.log('Unexpected problem when traversing', currentId)
-            return []
-        }
-
-        // Node has no children!!, return empty array
-        if (data.brandingSettings.channel.featuredChannelsUrls === undefined) {
-            print('Channel', currentId, 'has no chidren or some other problem!')
-            return []
-        }
-
-        let children = data.brandingSettings.channel.featuredChannelsUrls
-        let subCount = parseInt(data.statistics.subscriberCount)
-
-        if (data.id !== currentId) {
-            throw 'IDS UNMATCHED!'
-        }
-
-        // cria o nó
-        graph.nodes[data.id] = {
-            id: data.id,
-            visited: 1,
-            title: data.snippet.title,
-            country: data.snippet.country,
-            publishedAt: data.snippet.publishedAt,
-            ...data.statistics,
-            topics: data.topicDetails.topicIds,
-            counterId: counter
-        }
-
-        counter++
-
-        if (!running) {
-            return []
-        }
-
-
-
-        let childData = await youtube.channels.list({
-            auth: KEY,
-            id: data.brandingSettings.channel.featuredChannelsUrls.join(','),
-            part: 'statistics'
-        })
-
-        if (childData.data.pageInfo.totalResults !== children.length) {
-            throw 'CHILDREN DATA LENGTH MISTMATCHED FEATURED LENGTH'
-        }
-
-        childData.data.items.forEach((child, index) => {
-            let childSubCount = parseInt(child.statistics.subscriberCount)
-
-            if (childSubCount > SUB_LIMIT) {
-                graph.edges.push({
-                    source: currentId,
-                    target: child.id
-                })
-
-                if (child.id in graph.nodes && graph.nodes[child.id].visited) {
-                    // Se o filho ja existe e foi visitado remove ele da lista de filhos dessa visita
-                    children = children.filter((childId) => childId !== child.id)
-                } else {
-                    graph.nodes[child.id] = {
-                        visited: 0,
-                    }
-                }
-            } else {
-                // console.log('channel', child.id, 'has less than 1kk')
-                children = children.filter((childId) => childId !== child.id)
+            // ERROR CHECKING
+            if (data === null || !data) {
+                graph.edges = graph.edges.filter((e) => e.source !== currentId)
+                graph.edges = graph.edges.filter((e) => e.target !== currentId)
+                graph.nodes = omit(graph.nodes, [currentId])
+                
+                throw 'Data was null ' + currentId
             }
-        })
 
+            if (data.id !== currentId) {
+                throw 'IDS UNMATCHED!'
+            }
+
+            // cria o nó
+
+            graph.nodes[data.id] = {
+                id: data.id,
+                visited: 1,
+                title: data.snippet.title.normalize('NFD').replace(/[^\x00-\x7F]+/g, "").replace(/["]+/g, ''),
+                country: data.snippet.country,
+                publishedAt: data.snippet.publishedAt,
+                ...data.statistics,
+                topics: data.topicDetails ? data.topicDetails.topicIds : [],
+                counterId: counter
+            }
+
+            counter++
+
+            if (!running) {
+                return []
+            }
+
+
+            // Node has no children!
+            if (!data.brandingSettings || data.brandingSettings.channel.featuredChannelsUrls === undefined) {
+                throw `Channel ${currentId} has no chidren`
+            }
+
+            // DONE ERROR CHECKING
+
+            // children = await youtube.channels.list({
+            //     auth: KEY,
+            //     id: data.brandingSettings.channel.featuredChannelsUrls.join(','),
+            //     part: 'snippet'
+            // })
+
+            children = data.brandingSettings.channel.featuredChannelsUrls
+                
+            let subCount = parseInt(data.statistics.subscriberCount)
+            // console.log(subCount)
+
+
+            
+            // Se o subcount desse canal que foi visitado e menor, ignora os filhos dele
+            if (subCount < SUB_LIMIT) {
+                return []
+            } else {                    
+                children.forEach((childId, index) => {
+                    if (childId in graph.nodes) {
+                        // Se o filho ja existe e foi visitado remove ele da lista de filhos dessa visita
+                        children = children.filter((childId2) => childId !== childId2)
+                    } else {
+                        graph.nodes[childId] = {
+                            id: childId,
+                            visited: 0,
+                        }
+                    }
+
+                    graph.edges.push({
+                        source: currentId,
+                        target: childId
+                    })
+                })
+            }
+        }
+        
         return children
+
     } catch (error) {
-        console.log('Unexpected error ocurred', error)
+        if (error.constructor === Error && 'errors' in error) {
+            // console.log('Unexpected REQUEST ERROR ocurred', error.errors[0])
+            return [currentId]
+        } else {
+            // console.log('Unexpected error ocurred', error)
+        }
         return []
     }
 }
@@ -136,17 +160,33 @@ const validateGraph = (graph) => {
 }
 
 const createGraph = async (channelId) => {
-    let queue = [channelId]
+    let queue = [...channelId]
+    // while (queue.length > 0) {
+    //     let first = queue.shift()
+    //     let children = await traverse(first)
+    //     console.log('queue length:', queue.length, 'visiting', first, 'added', children.length)
+    //     queue = queue.concat(children)
+    //     history.push(first)
+    // }
+
     while (queue.length > 0) {
-        let first = queue.shift()
-        let children = await traverse(first)
-        console.log('queue length:', queue.length, 'visiting', first, 'added', children.length)
+        let batch = queue.splice(0, 100)
+        let children = await Promise.all(batch.map(id => traverse(id)))
+        children = flatten(children)
         queue = queue.concat(children)
-        history.push(first)
+        console.log('queue length:', queue.length)
+        // history.push(first)
     }
 
     if (queue.length == 0) {
         console.log('Queue is empty! Its over')
+        // @ts-ignore
+        let nodesNotVisited = Object.values(graph.nodes).filter(c => c.visited === 0).map(i => i.id)
+        if (nodesNotVisited.length > 0) {
+            console.log('NODES NOT VISITED!', nodesNotVisited)
+            return createGraph(nodesNotVisited)
+        }
+
         if (validateGraph(graph)) {
             console.log('GRAPH IS VALID')
         } else {
@@ -170,7 +210,11 @@ const createGraph = async (channelId) => {
 // let startingId = 'UC-lHJZR3Gqxm24_Vd_AJ5Yw' // pewdiepie nao inidica ninguem
 // let startingId = 'UCYzPXprvl5Y-Sf0g4vX-m6g' // jackse nao termina
 // let startingId = 'UCV306eHqgo0LvBf3Mh36AHg' //felipe neto
-let startingId = 'UC3KQ5GWANYF8lChqjZpXsQw' //whindersson
+let startingId = [
+    'UC3KQ5GWANYF8lChqjZpXsQw',
+    'UCEWHPFNilsT0IfQfutVzsag',
+    'UCOOCeqi5txwviDZ4M5W9QSg'
+] //whindersson, porta, dando boura
 
 
 
@@ -200,7 +244,6 @@ const getNodeText = (node) => {
         } else if (v.constructor === Array) {
             let c = 0
             let deduped = v.filter((item, index, self) => self.indexOf(item) == index);
-            print(deduped)
             s += `    ${k} [ `
             for ([k2, v2] of Object.entries(deduped)) {
                 s += `n${c} `
@@ -252,6 +295,7 @@ const writeGml = (graphJson) => {
     target "${e.target}"
 ]\n`)
     })
+    fs.writeSync(outputFile, '\n]')
     print('Finished writing')
 }
 
